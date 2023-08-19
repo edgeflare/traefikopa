@@ -1,77 +1,87 @@
 # Open Policy Agent (OPA) Authorization middleware for Traefik
 
-> ### This plugin is Work-in-Progress. It's useful if the full request context is needed for evaluating OPA policy decision. Traefik forwardAuth middleware doesn't preserve the request entirely, stripping off, for example, the `body`, before forwarding to the authz server.
+> ### This plugin is useful if the full request context is needed for evaluating OPA policy decision. Traefik forwardAuth middleware doesn't preserve the request entirely, stripping off, for example, the `body`, before forwarding to the authz server. If you can NOT modify Traefik installation, you might checkout the simpler [traefik-opa-proxy](https://github.com/edgeflare/traefik-opa-proxy) which has some limitations, though.
 
-## Develop
+## Installtion
 
-Create a working directory, say, traefik-opa-plugin.
-
-```sh
-mkdir traefik-opa-plugin && cd traefik-opa-plugin
-```
-
-Inside working dir, create Traefik static config, `traefik.yml` with below content
+### Using Helm
 
 ```yaml
-log:
-  level: INFO
-
-entryPoints:
-  web:
-    address: ":80"
-
-providers:
-  file:
-    filename: dynamic_conf.yml  # Config file for dynamic configuration
-    watch: true  # watch file changes
-
-api:
-  insecure: true  # Enables the dashboard on http://localhost/dashboard/
-  dashboard: true
-
-experimental:
-  localPlugins:
-    opa: # custom name for the plugin, used in the middleware
-      moduleName: github.com/edgeflare/traefikopa
+apiVersion: helm.cattle.io/v1
+kind: HelmChart # or HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    additionalArguments:
+      - "--experimental.plugins.opa.moduleName=github.com/edgeflare/traefikopa"
+      - "--experimental.plugins.opa.version=v0.0.1"
+#     - others-additional-arguments
 ```
 
-And treafik dynamic config `dynamic_conf.yml` with
+### Using command line arguments
+
+```sh
+traefik \
+  --experimental.plugins.opa.moduleName=github.com/edgeflare/traefikopa \
+  --experimental.plugins.opa.version=v0.0.1
+```
+
+## Usage in Kubernetes
 
 ```yaml
-http:
-  routers:
-    my-router:
-      rule: host(`opa.develop.local`)
-      service: service-foo
-      entryPoints:
-        - web
-      middlewares:
-        - traefik-opa
-
-  services:
-   service-foo:
-      loadBalancer:
-        servers:
-          - url: http://127.0.0.1:8080 # downstream backend server
-  
-  middlewares:
-    traefik-opa: # custom name for the middleware
-      plugin:
-        opa: # custom name for the plugin
-          url: http://localhost:8181/v1/data/httpapi/authz
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: opa-authz
+  namespace: kube-system
+spec:
+  plugin:
+    opa:
+      URL: http://opa.kube-system:8181/v1/data/httpapi/authz
+      # Assuming OPA is installed in kube-system namespace
+      # and exposed via a service named opa on port 8181
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: yourapp.example.com
+  namespace: demo
+spec:
+  entryPoints:
+  - web
+  - websecure
+  routes:
+  - match: Host(`yourapp.example.com`) 
+    kind: Rule
+    services:
+    - name: yourapp-service
+      port: 80
+    middlewares:
+    - name: opa-authz
+  tls: # optional
+    secretName: yourapp.example.com-tls
+---
+# Use either IngressRoute, or Ingress
+kind: Ingress
+metadata:
+  name: yourapp.example.com
+  namespace: demo
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.middlewares: kube-system-opa-authz@kubernetescrd
+spec:
+  rules:
+  - host: yourapp.example.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: yourapp-service
+            port:
+              number: 80
+        path: /
 ```
 
-Clone this repo into a nested directory like
-
-```sh
-mkdir -p plugins-local/src/github.com/edgeflare
-git clone git@github.com:edgeflare/traefikopa.git plugins-local/src/github.com/edgeflare/traefikopa
-```
-
-For testing have your OPA server and backend server ready. Now start Traefik
-
-```sh
-traefik
-```
-
-And get going! Any contribution is more than welcome :)
+See [example](https://github.com/edgeflare/traefik-opa-proxy/tree/master/example) for Kubernetes deployment manifests.
